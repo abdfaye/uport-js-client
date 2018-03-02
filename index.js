@@ -10,6 +10,7 @@ const UportLite = require('uport-lite')
 const verifyJWT = require('uport').JWT.verifyJWT
 const nets = require('nets')
 const Contract = require('uport').Contract
+const TContract = require('truffle-contract')
 const ethutil = require('ethereumjs-util')
 const base58 = require('bs58')
 const decodeEvent = require('ethjs-abi').decodeEvent
@@ -52,7 +53,10 @@ const networks = {
                   rpcUrl: 'https://kovan.infura.io' },
   'rinkeby':   {  id: '0x4',
                   registry: '0x2cc31912b2b0f3075a87b3640923d45a26cef3ee',
-                  rpcUrl: 'https://rinkeby.infura.io' }
+                  rpcUrl: 'https://rinkeby.infura.io' },
+  'local':     {  id: '0x5',
+                  registry: '0x1349f3e1b8d71effb47b840594ff27da7e603d17',
+                  rpcUrl: 'http://127.0.0.1:22000' }
 }
 
 const DEFAULTNETWORK = 'rinkeby'
@@ -345,7 +349,15 @@ class UPortClient {
   }
 
   writeDDO(newDdo) {
-   const Registry = Contract(RegistryArtifact.abi).at(this.network.registry)
+   const Registry = TContract(RegistryArtifact)
+   const from = this.deviceKeys.address
+   Registry.setProvider(new HttpProvider(this.network.rpcUrl))
+   Registry.defaults({
+    from: from,
+    gas: 3000000,
+    gasPrice: 0
+    })
+   const reg = Registry.at(this.network.registry)
    return this.getDDO().then(ddo => {
       ddo = Object.assign(ddo || {}, newDdo)
       return new Promise((resolve, reject) => {
@@ -360,9 +372,9 @@ class UPortClient {
       // removes Qm from ipfs hash, which specifies length and hash
       const hashArg = `0x${hexhash.slice(4)}`
       const key = 'uPortProfileIPFS1220'
-      return Registry.set(key, this.id, hashArg)
+      return reg.set(key, this.id, hashArg)
     })
-    .then(this.consume.bind(this))
+    //.then(this.consume.bind(this))
   }
 
   signRawTx(unsignedRawTx) {
