@@ -371,10 +371,12 @@ class UPortClient {
       })
     }).then(res => {
       const hash = res[0].hash
+      console.log(hash)
       const hexhash = new Buffer(base58.decode(hash)).toString('hex')
       // removes Qm from ipfs hash, which specifies length and hash
       const hashArg = `0x${hexhash.slice(4)}`
       const key = 'uPortProfileIPFS1220'
+      console.log(hashArg)
       return reg.set(key, this.id, hashArg)
     })
     //.then(this.consume.bind(this))
