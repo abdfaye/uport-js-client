@@ -14,7 +14,10 @@ const ethutil = require('ethereumjs-util')
 const base58 = require('bs58')
 const decodeEvent = require('ethjs-abi').decodeEvent
 const SecureRandom = require('secure-random')
-const IPFS = require('ipfs-mini');
+// TODO return to smaller lib
+// const IPFS = require('ipfs-mini');
+const IPFS = require('ipfs-api')
+const isIPFS = require('is-ipfs')
 const EthSigner = require('eth-signer')
 const SimpleSigner = EthSigner.signers.SimpleSigner
 const IMProxySigner = EthSigner.signers.IMProxySigner
@@ -108,7 +111,6 @@ const serialize = (uportClient) => {
   const jsonClientState = {
     id: uportClient.id,
     network: uportClient.network,
-    nonce: uportClient.nonce,
     info: uportClient.info,
     credentials: uportClient.credentials,
     ipfsConfig: uportClient.ipfsUrl,
@@ -172,6 +174,12 @@ const responseHandlers = {
   'http'   : HTTPResponseHandler
 }
 
+const prommiseTimeOut = (msec) => {
+  return new Promise((resolve, reject) => {
+    setTimeout(resolve, msec)
+  })
+}
+
 const configResponseHandler = (responseHandler = 'simple') => {
   if ( typeof(responseHandler) === 'function') return responseHandler
   if ( typeof(responseHandler) === 'string') {
@@ -188,8 +196,6 @@ const isAddAttestationRequest = (uri) => !!uri.match(/add\?/g)
 
 class UPortClient {
   constructor(config = {}, initState = {}) {
-    // TODO handle nonce better
-    this.nonce = config.nonce || 0
     // Handle this differently once there is a test and full client
     this.responseHandler = configResponseHandler(config.responseHandler)
     // {key: value, ...}
@@ -251,26 +257,47 @@ class UPortClient {
      this.transactionSigner = new IMProxySigner(this.id, this.simpleSigner, IdentityManagerAdress)
   }
 
-  appDDO(name, description, url, imgPath) {
-      // TODO consume both path and buffer, error handle invalid path
+  appDDO(name, description, url, img) {
     return new Promise((resolve, reject) => {
       const DDO =  { '@type': 'App' }
       if (name) DDO.name = name
       if (description) DDO.description = description
       if (url) DDO.url = url
-      if (imgPath) {
-        fs.readFile(imgPath, (err, data) => {
-          if (err) reject(new Error(err))
-          this.ipfs.add(data, (err, result) => {
+      if (img) {
+        if (isIPFS.cid(img)) {
+          DDO.image = { contentUrl: `/ipfs/${img}` }
+          resolve(DDO)
+        } else if (isIPFS.path(img)) {
+          DDO.image = { contentUrl: img }
+          resolve(DDO)
+        } else {
+          fs.readFile(imgPath, (err, data) => {
             if (err) reject(new Error(err))
-            const imgHash = result
-            DDO.image = { contentUrl: `/ipfs/${imgHash}` }
-            resolve(DDO)
+            this.ipfs.files.add(data, (err, result) => {
+              if (err) reject(new Error(err))
+              const imgHash = result[0].hash
+              DDO.image = { contentUrl: `/ipfs/${imgHash}` }
+              resolve(DDO)
+            })
           })
-        })
+        }
       } else {
         resolve(DDO)
       }
+    })
+  }
+
+  getReceipt(txHash) {
+    let receipt
+    return this.ethjs.getTransactionReceipt(txHash).then(res => {
+      if (res !== null) {
+        receipt = res
+        return
+      }
+      return prommiseTimeOut(1000)
+    }).then(() => {
+      if (receipt) return receipt
+      return this.getReceipt(txHash)
     })
   }
 
@@ -282,7 +309,7 @@ class UPortClient {
     const uri = IdentityManager.createIdentity(this.deviceKeys.address, this.recoveryKeys.address)
 
     return this.consume(uri)
-            .then(this.ethjs.getTransactionReceipt.bind(this.ethjs))
+            .then(this.getReceipt.bind(this))
             .then(receipt => {
               const log = receipt.logs[0]
               const createEventAbi = IdentityManager.abi.filter(obj => obj.type === 'event' && obj.name ==='IdentityCreated')[0]
@@ -322,12 +349,13 @@ class UPortClient {
    return this.getDDO().then(ddo => {
       ddo = Object.assign(ddo || {}, newDdo)
       return new Promise((resolve, reject) => {
-        this.ipfs.addJSON(ddo, (err, result) => {
+        this.ipfs.add(Buffer.from(JSON.stringify(ddo)), (err, result) => {
             if (err) reject(new Error(err))
             resolve(result)
         })
       })
-    }).then(hash => {
+    }).then(res => {
+      const hash = res[0].hash
       const hexhash = new Buffer(base58.decode(hash)).toString('hex')
       // removes Qm from ipfs hash, which specifies length and hash
       const hashArg = `0x${hexhash.slice(4)}`
@@ -379,28 +407,39 @@ class UPortClient {
     const to = uri.match(/0[xX][0-9a-fA-F]+/g)[0]
     const from = this.deviceKeys.address
     const data = params.bytecode || params.function ?  funcToData(params.function) : '0x' //TODO whats the proper null value?
-    const nonce = this.nonce++
     const value = params.value || 0
-    const gas = params.gas ? params.gas : 6000000
-    // TODO good default or opts
-    const gasPrice = 3000000
-    const txObj = {to, value: new BN(value), data, gas, gasPrice, nonce, from}
-    const tx = new Transaction(txObj)
 
-    const unsignedRawTx = util.bufferToHex(tx.serialize())
-    tx.sign(new Buffer(this.deviceKeys.privateKey.slice(2), 'hex')) // TODO remove redundant, get hash from above
+    let nonce, gasPrice, gas, txObj
 
-    if (this.ethjs) {
-      return this.signRawTx(unsignedRawTx)
-                 .then(rawTx => {
-                   return this.ethjs.sendRawTransaction(rawTx)
-                 }).then(txHash => {
-                   return this.responseHandler(txHash, params.callback_url)
-                 })
-    } else {
-      const txHash = util.bufferToHex(tx.hash(true))
-      return this.responseHandler(txHash, params.callback_url)
-    }
+    return this.ethjs.getTransactionCount(this.deviceKeys.address, 'pending')
+      .then(res => {
+        nonce = res
+        return params.gasPrice ?  params.gasPrice : this.ethjs.gasPrice()
+      }).then(res => {
+        gasPrice = res
+        txObj = {to, value: new BN(value), data, gas, nonce, from}
+        // TODO estimateGas
+        // return this.ethjs.estimateGas(...)
+        return params.gas ? params.gas : 3000000
+      }).then(res => {
+        txObj.gas = res
+        const tx = new Transaction(txObj)
+
+        const unsignedRawTx = util.bufferToHex(tx.serialize())
+        tx.sign(new Buffer(this.deviceKeys.privateKey.slice(2), 'hex')) // TODO remove redundant, get hash from above
+
+        if (this.ethjs) {
+          return this.signRawTx(unsignedRawTx)
+                     .then(rawTx => {
+                       return this.ethjs.sendRawTransaction(rawTx)
+                     }).then(txHash => {
+                       return this.responseHandler(txHash, params.callback_url)
+                     })
+        } else {
+          const txHash = util.bufferToHex(tx.hash(true))
+          return this.responseHandler(txHash, params.callback_url)
+        }
+      })
   }
 
   addAttestationRequestHandler(uri) {
