@@ -328,11 +328,14 @@ class UPortClient {
               }
               const ddo = Object.assign(baseDdo, initDdo)
               return this.writeDDO(ddo)
-            }).then(this.ethjs.getTransactionReceipt.bind(this.ethjs))
-            .then(receipt => {
-              // .. receipt
-              return
+            }).then(res => {
+              console.log(res)
+              //this.ethjs.getTransactionReceipt.bind(this.ethjs)
             })
+            //.then(receipt => {
+              // .. receipt
+              //return
+            //})
   }
 
   sign(payload) {
