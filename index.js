@@ -377,7 +377,7 @@ class UPortClient {
    return this.getDDO().then(ddo => {
       ddo = Object.assign(ddo || {}, newDdo)
       return new Promise((resolve, reject) => {
-      createJWT(this.simpleSigner, ddo).then(jwt => {
+      createJWT({address: this.mnid, this.simpleSigner}, ddo).then(jwt => {
         console.log(jwt)
       })
       this.ipfs.add(Buffer.from(JSON.stringify(ddo)), (err, result) => {
