@@ -8,6 +8,7 @@ const EthJS = require('ethjs-query');
 const HttpProvider = require('ethjs-provider-http');
 const UportLite = require('uport-lite')
 const verifyJWT = require('uport').JWT.verifyJWT
+const createJWT = require('uport').JWT.createJWT
 const nets = require('nets')
 const Contract = require('uport').Contract
 const TContract = require('truffle-contract')
@@ -308,12 +309,22 @@ class UPortClient {
   initializeIdentity(initDdo){
     if (!this.network) return Promise.reject(new Error('No network configured'))
     const IdentityManagerAdress = this.identityManagerAddress
-    const IdentityManager = Contract(IdentityManagerArtifact.abi).at(IdentityManagerAdress) // add config for this
+    const IdentityManagerContract = TContract(IdentityManagerArtifact)
+    const from = this.deviceKeys.address
+    IdentityManagerContract.setProvider(new HttpProvider(this.network.rpcUrl))
+    IdentityManagerContract.defaults({
+      from: from,
+      gas: 3000000,
+      gasPrice: 0
+    })
+    const IdentityManager = IdentityManagerContract.at(IdentityManagerAdress) // add config for this
     this.initKeys()
-    const uri = IdentityManager.createIdentity(this.deviceKeys.address, this.recoveryKeys.address)
-
-    return this.consume(uri)
-            .then(this.getReceipt.bind(this))
+    return IdentityManager.createIdentity(this.deviceKeys.address, this.recoveryKeys.address)
+            .then(hash => {
+              console.log("test")
+              console.log(hash)
+              return hash.receipt
+            })
             .then(receipt => {
               const log = receipt.logs[0]
               const createEventAbi = IdentityManager.abi.filter(obj => obj.type === 'event' && obj.name ==='IdentityCreated')[0]
@@ -324,7 +335,9 @@ class UPortClient {
               const baseDdo = {
                   '@context': 'http://schema.org',
                   '@type': 'Person',
-                  "publicKey": this.deviceKeys.publicKey
+                  "id": this.id,
+                  "publicKey": this.deviceKeys.publicKey,
+                  "name": "Abdoulaye FAYE"
               }
               const ddo = Object.assign(baseDdo, initDdo)
               return this.writeDDO(ddo)
@@ -364,7 +377,10 @@ class UPortClient {
    return this.getDDO().then(ddo => {
       ddo = Object.assign(ddo || {}, newDdo)
       return new Promise((resolve, reject) => {
-        this.ipfs.add(Buffer.from(JSON.stringify(ddo)), (err, result) => {
+      createJWT(this.simpleSigner, ddo).then(jwt => {
+        console.log(jwt)
+      })
+      this.ipfs.add(Buffer.from(JSON.stringify(ddo)), (err, result) => {
             if (err) reject(new Error(err))
             resolve(result)
         })
