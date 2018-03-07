@@ -8,7 +8,8 @@ const EthJS = require('ethjs-query');
 const HttpProvider = require('ethjs-provider-http');
 const UportLite = require('uport-lite')
 const verifyJWT = require('uport').JWT.verifyJWT
-const createJWT = require('uport').JWT.createJWT
+const createJWT = require('uport-jwt').createJWT
+const SimpleSignerJWT = require('uport-jwt').SimpleSigner
 const nets = require('nets')
 const Contract = require('uport').Contract
 const TContract = require('truffle-contract')
@@ -377,12 +378,14 @@ class UPortClient {
    return this.getDDO().then(ddo => {
       ddo = Object.assign(ddo || {}, newDdo)
       return new Promise((resolve, reject) => {
-      createJWT({address: this.mnid, this.simpleSigner}, ddo).then(jwt => {
+      const signer = SimpleSignerJWT(this.deviceKeys.privateKey.slice(2))
+      createJWT(ddo, {issuer: this.mnid, signer}).then(jwt => {
         console.log(jwt)
-      })
-      this.ipfs.add(Buffer.from(JSON.stringify(ddo)), (err, result) => {
-            if (err) reject(new Error(err))
-            resolve(result)
+        ddo.jwt=jwt
+        this.ipfs.add(Buffer.from(JSON.stringify(ddo)), (err, result) => {
+              if (err) reject(new Error(err))
+              resolve(result)
+          })
         })
       })
     }).then(res => {
