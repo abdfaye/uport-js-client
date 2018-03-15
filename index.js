@@ -40,6 +40,7 @@ const tryRequire = (path) => {
 const uportIdentity = require('uport-identity')
 const RegistryArtifact = require('uport-registry')
 const IdentityManagerArtifact = uportIdentity.IdentityManager.v1
+const IdentityArtifact = uportIdentity.Proxy.v1
 
 // TODO need to import identity manager Adresses
 
@@ -365,7 +366,7 @@ class UPortClient {
     return this.registry(this.mnid)
   }
 
-  writeDDO(newDdo) {
+  /*writeDDO(newDdo) {
    const Registry = TContract(RegistryArtifact)
    const from = this.deviceKeys.address
    Registry.setProvider(new HttpProvider(this.network.rpcUrl))
@@ -399,6 +400,46 @@ class UPortClient {
       return reg.set(key, this.id, hashArg)
     })
     //.then(this.consume.bind(this))
+  }*/
+
+  writeDDO(newDdo) {
+   console.log("Writing DDO")
+   const Identity = TContract(IdentityArtifact)
+   const from = this.deviceKeys.address
+   Identity.setProvider(new HttpProvider(this.network.rpcUrl))
+   Identity.defaults({
+    from: from,
+    gas: 3000000,
+    gasPrice: 0
+    })
+   const proxy = Identity.at(this.id)
+   const Registry = Contract(RegistryArtifact.abi).at(this.network.registry)
+   return this.getDDO().then(ddo => {
+      ddo = Object.assign(ddo || {}, newDdo)
+      return new Promise((resolve, reject) => {
+        this.ipfs.add(Buffer.from(JSON.stringify(ddo)), (err, result) => {
+            if (err) reject(new Error(err))
+            resolve(result)
+        })
+      })
+    }).then(res => {
+      const hash = res[0].hash
+      const hexhash = new Buffer(base58.decode(hash)).toString('hex')
+      // removes Qm from ipfs hash, which specifies length and hash
+      const hashArg = `0x${hexhash.slice(4)}`
+      const key = 'uPortProfileIPFS1220'
+      console.log(hashArg)
+      return Registry.set(key, this.id, hashArg)
+    })
+    .then(uri => {
+      console.log(uri)
+      const params = getUrlParams(uri)
+      const data = params.bytecode || params.function ?  funcToData(params.function) : '0x' //TODO whats the proper null value?
+      console.log(data)
+      return data
+    }).then(data => {
+      return proxy.forward(this.network.registry, 0, data)
+    })
   }
 
   signRawTx(unsignedRawTx) {
