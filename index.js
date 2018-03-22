@@ -8,11 +8,8 @@ const EthJS = require('ethjs-query');
 const HttpProvider = require('ethjs-provider-http');
 const UportLite = require('uport-lite')
 const verifyJWT = require('uport').JWT.verifyJWT
-const createJWT = require('uport-jwt').createJWT
-const SimpleSignerJWT = require('uport-jwt').SimpleSigner
 const nets = require('nets')
 const Contract = require('uport').Contract
-const TContract = require('truffle-contract')
 const ethutil = require('ethereumjs-util')
 const base58 = require('bs58')
 const decodeEvent = require('ethjs-abi').decodeEvent
@@ -40,7 +37,6 @@ const tryRequire = (path) => {
 const uportIdentity = require('uport-identity')
 const RegistryArtifact = require('uport-registry')
 const IdentityManagerArtifact = uportIdentity.IdentityManager.v1
-const IdentityArtifact = uportIdentity.Proxy.v1
 
 // TODO need to import identity manager Adresses
 
@@ -56,10 +52,7 @@ const networks = {
                   rpcUrl: 'https://kovan.infura.io' },
   'rinkeby':   {  id: '0x4',
                   registry: '0x2cc31912b2b0f3075a87b3640923d45a26cef3ee',
-                  rpcUrl: 'https://rinkeby.infura.io' },
-  'local':     {  id: '0x5',
-                  registry: '0x1349f3e1b8d71effb47b840594ff27da7e603d17',
-                  rpcUrl: 'http://127.0.0.1:22000' }
+                  rpcUrl: 'https://rinkeby.infura.io' }
 }
 
 const DEFAULTNETWORK = 'rinkeby'
@@ -123,17 +116,16 @@ const serialize = (uportClient) => {
     ipfsConfig: uportClient.ipfsUrl,
     deviceKeys: uportClient.deviceKeys,
     recoveryKeys: uportClient.recoveryKeys,
-    mnid: uportClient.mnid
+    mnid: uportClient.mnid,
+    initialized: uportClient.initialized
   }
   return JSON.stringify(jsonClientState)
 }
 
 const deserialize = (str) => {
   const jsonClientState = JSON.parse(str)
-  const uportClient = new UPortClient(jsonClientState)
+  const uportClient = new UPortClient(jsonClientState, { credentials: jsonClientState.credentials })
   // Some of uport client could be refactored to handle this through configs, but won't change this interface once changed
-  uportClient.deviceKeys = jsonClientState.deviceKeys
-  uportClient.recoveryKeys = jsonClientState.recoveryKeys
   uportClient.id = jsonClientState.id
   uportClient.mnid = jsonClientState.mnid
   uportClient.initTokenSigner()
@@ -240,6 +232,7 @@ class UPortClient {
       this.registryAddress = this.network.registry
       this.identityManagerAddress = this.network.identityManager
 
+      this.initialized = config.initialized || false
   }
 }
 
@@ -311,22 +304,12 @@ class UPortClient {
   initializeIdentity(initDdo){
     if (!this.network) return Promise.reject(new Error('No network configured'))
     const IdentityManagerAdress = this.identityManagerAddress
-    const IdentityManagerContract = TContract(IdentityManagerArtifact)
-    const from = this.deviceKeys.address
-    IdentityManagerContract.setProvider(new HttpProvider(this.network.rpcUrl))
-    IdentityManagerContract.defaults({
-      from: from,
-      gas: 3000000,
-      gasPrice: 0
-    })
-    const IdentityManager = IdentityManagerContract.at(IdentityManagerAdress) // add config for this
+    const IdentityManager = Contract(IdentityManagerArtifact.abi).at(IdentityManagerAdress) // add config for this
     this.initKeys()
-    return IdentityManager.createIdentity(this.deviceKeys.address, this.recoveryKeys.address)
-            .then(hash => {
-              console.log("test")
-              console.log(hash)
-              return hash.receipt
-            })
+    const uri = IdentityManager.createIdentity(this.deviceKeys.address, this.recoveryKeys.address)
+
+    return this.consume(uri)
+            .then(this.getReceipt.bind(this))
             .then(receipt => {
               const log = receipt.logs[0]
               const createEventAbi = IdentityManager.abi.filter(obj => obj.type === 'event' && obj.name ==='IdentityCreated')[0]
@@ -337,20 +320,16 @@ class UPortClient {
               const baseDdo = {
                   '@context': 'http://schema.org',
                   '@type': 'Person',
-                  "id": this.id,
-                  "publicKey": this.deviceKeys.publicKey,
-                  "name": "Abdoulaye FAYE"
+                  "publicKey": this.deviceKeys.publicKey
               }
               const ddo = Object.assign(baseDdo, initDdo)
               return this.writeDDO(ddo)
-            }).then(res => {
-              console.log(res)
-              //this.ethjs.getTransactionReceipt.bind(this.ethjs)
-            })
-            //.then(receipt => {
+            }).then(this.ethjs.getTransactionReceipt.bind(this.ethjs))
+            .then(receipt => {
               // .. receipt
-              //return
-            //})
+              this.initialized = true
+              return
+            })
   }
 
   sign(payload) {
@@ -366,53 +345,7 @@ class UPortClient {
     return this.registry(this.mnid)
   }
 
-  /*writeDDO(newDdo) {
-   const Registry = TContract(RegistryArtifact)
-   const from = this.deviceKeys.address
-   Registry.setProvider(new HttpProvider(this.network.rpcUrl))
-   Registry.defaults({
-    from: from,
-    gas: 3000000,
-    gasPrice: 0
-    })
-   const reg = Registry.at(this.network.registry)
-   return this.getDDO().then(ddo => {
-      ddo = Object.assign(ddo || {}, newDdo)
-      return new Promise((resolve, reject) => {
-      const signer = SimpleSignerJWT(this.deviceKeys.privateKey.slice(2))
-      createJWT(ddo, {issuer: this.mnid, signer}).then(jwt => {
-        console.log(jwt)
-        ddo.jwt=jwt
-        this.ipfs.add(Buffer.from(JSON.stringify(ddo)), (err, result) => {
-              if (err) reject(new Error(err))
-              resolve(result)
-          })
-        })
-      })
-    }).then(res => {
-      const hash = res[0].hash
-      console.log(hash)
-      const hexhash = new Buffer(base58.decode(hash)).toString('hex')
-      // removes Qm from ipfs hash, which specifies length and hash
-      const hashArg = `0x${hexhash.slice(4)}`
-      const key = 'uPortProfileIPFS1220'
-      console.log(hashArg)
-      return reg.set(key, this.id, hashArg)
-    })
-    //.then(this.consume.bind(this))
-  }*/
-
   writeDDO(newDdo) {
-   console.log("Writing DDO")
-   const Identity = TContract(IdentityArtifact)
-   const from = this.deviceKeys.address
-   Identity.setProvider(new HttpProvider(this.network.rpcUrl))
-   Identity.defaults({
-    from: from,
-    gas: 3000000,
-    gasPrice: 0
-    })
-   const proxy = Identity.at(this.id)
    const Registry = Contract(RegistryArtifact.abi).at(this.network.registry)
    return this.getDDO().then(ddo => {
       ddo = Object.assign(ddo || {}, newDdo)
@@ -428,18 +361,9 @@ class UPortClient {
       // removes Qm from ipfs hash, which specifies length and hash
       const hashArg = `0x${hexhash.slice(4)}`
       const key = 'uPortProfileIPFS1220'
-      console.log(hashArg)
       return Registry.set(key, this.id, hashArg)
     })
-    .then(uri => {
-      console.log(uri)
-      const params = getUrlParams(uri)
-      const data = params.bytecode || params.function ?  funcToData(params.function) : '0x' //TODO whats the proper null value?
-      console.log(data)
-      return data
-    }).then(data => {
-      return proxy.forward(this.network.registry, 0, data)
-    })
+    .then(this.consume.bind(this))
   }
 
   signRawTx(unsignedRawTx) {
